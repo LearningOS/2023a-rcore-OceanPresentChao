@@ -16,6 +16,7 @@ mod task;
 
 use crate::config::MAX_SYSCALL_NUM;
 use crate::loader::{get_app_data, get_num_app};
+use crate::mm::{MapPermission, PageTableEntry, VirtAddr, VirtPageNum};
 use crate::sync::UPSafeCell;
 use crate::timer::get_time_ms;
 use crate::trap::TrapContext;
@@ -252,4 +253,32 @@ pub fn get_current_task_syscall_times() -> [u32; MAX_SYSCALL_NUM] {
 /// get current task fst time
 pub fn get_current_task_fst_time() -> usize {
     TASK_MANAGER.get_current_task_fst_time()
+}
+
+/// alloc framed area
+pub fn alloc_framed_area(start_va: VirtAddr, end_va: VirtAddr, permission: MapPermission) {
+    let mut inner = TASK_MANAGER.inner.exclusive_access();
+    let cur = inner.current_task;
+    inner.tasks[cur]
+        .memory_set
+        .insert_framed_area(start_va, end_va, permission)
+}
+
+/// get pte from vpn
+pub fn get_pte_by_vpn(vpn: VirtPageNum) -> Option<PageTableEntry> {
+    let inner = TASK_MANAGER.inner.exclusive_access();
+    let cur = inner.current_task;
+    inner.tasks[cur].memory_set.translate(vpn)
+}
+
+/// unmap vp area
+pub fn unmap_sequence_area(start_vpn: VirtPageNum, end_vpn: VirtPageNum) {
+    let mut inner = TASK_MANAGER.inner.exclusive_access();
+    let cur = inner.current_task;
+    for i in start_vpn.0..end_vpn.0 {
+        inner.tasks[cur]
+            .memory_set
+            .get_page_table()
+            .unmap(VirtPageNum(i));
+    }
 }

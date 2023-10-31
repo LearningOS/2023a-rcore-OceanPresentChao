@@ -70,6 +70,12 @@ impl MemorySet {
         }
         self.areas.push(map_area);
     }
+
+    /// get page table as mut ref
+    pub fn get_page_table(&mut self) -> &mut PageTable {
+        &mut self.page_table
+    }
+
     /// Mention that trampoline is not collected by areas.
     fn map_trampoline(&mut self) {
         self.page_table.map(

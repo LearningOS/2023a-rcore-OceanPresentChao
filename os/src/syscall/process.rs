@@ -1,11 +1,11 @@
 //! Process management syscalls
 use crate::{
-    config::MAX_SYSCALL_NUM,
-    mm::translated_byte_buffer,
+    config::{MAX_SYSCALL_NUM, PAGE_SIZE},
+    mm::{translated_byte_buffer, MapPermission, VirtAddr, VirtPageNum},
     task::{
-        change_program_brk, current_user_token, exit_current_and_run_next,
+        alloc_framed_area, change_program_brk, current_user_token, exit_current_and_run_next,
         get_current_task_fst_time, get_current_task_status, get_current_task_syscall_times,
-        suspend_current_and_run_next, TaskStatus,
+        get_pte_by_vpn, suspend_current_and_run_next, unmap_sequence_area, TaskStatus,
     },
     timer::get_time_us,
 };
@@ -95,15 +95,52 @@ pub fn sys_task_info(_ti: *mut TaskInfo) -> isize {
 }
 
 // YOUR JOB: Implement mmap.
+/// Port: X | W | R ;len = 3
 pub fn sys_mmap(_start: usize, _len: usize, _port: usize) -> isize {
-    trace!("kernel: sys_mmap NOT IMPLEMENTED YET!");
-    -1
+    trace!("kernel: sys_mmap");
+    if _start % PAGE_SIZE != 0
+        || _port & !0x7 != 0
+        || _port & 0x7 == 0
+        || _start >= usize::MAX
+        || _start + _len >= usize::MAX
+    {
+        return -1;
+    }
+    let start_vpn = VirtAddr::from(_start).floor();
+    let end_vpn = VirtAddr::from(_start + _len).ceil();
+    //左闭右开
+    for i in start_vpn.0..end_vpn.0 {
+        if let Some(pte) = get_pte_by_vpn(VirtPageNum(i)) {
+            if pte.is_valid() {
+                return -1;
+            }
+        };
+    }
+    let permission = MapPermission::from_bits_truncate((_port << 1) as u8) | MapPermission::U;
+    alloc_framed_area(start_vpn.into(), end_vpn.into(), permission);
+    0
 }
 
 // YOUR JOB: Implement munmap.
 pub fn sys_munmap(_start: usize, _len: usize) -> isize {
-    trace!("kernel: sys_munmap NOT IMPLEMENTED YET!");
-    -1
+    trace!("kernel: sys_munmap");
+    if _start % PAGE_SIZE != 0 || _start >= usize::MAX || _start + _len >= usize::MAX {
+        return -1;
+    }
+    let start_vpn = VirtAddr::from(_start).floor();
+    let end_vpn = VirtAddr::from(_start + _len).ceil();
+    //左闭右开
+    for i in start_vpn.0..end_vpn.0 {
+        if let Some(pte) = get_pte_by_vpn(VirtPageNum(i)) {
+            if !pte.is_valid() {
+                return -1;
+            }
+        } else {
+            return -1;
+        };
+    }
+    unmap_sequence_area(start_vpn, end_vpn);
+    0
 }
 /// change data segment size
 pub fn sys_sbrk(size: i32) -> isize {
