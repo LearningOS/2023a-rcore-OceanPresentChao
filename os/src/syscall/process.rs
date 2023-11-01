@@ -1,14 +1,21 @@
 //! Process management syscalls
+use crate::{
+    config::PAGE_SIZE,
+    mm::{MapPermission, VirtAddr, VirtPageNum},
+    task::{alloc_framed_area, get_pte_by_vpn, unmap_sequence_area},
+};
 use alloc::sync::Arc;
 
 use crate::{
     config::MAX_SYSCALL_NUM,
     loader::get_app_data_by_name,
-    mm::{translated_refmut, translated_str},
+    mm::{translated_byte_buffer, translated_refmut, translated_str},
     task::{
         add_task, current_task, current_user_token, exit_current_and_run_next,
+        get_current_task_fst_time, get_current_task_status, get_current_task_syscall_times,
         suspend_current_and_run_next, TaskStatus,
     },
+    timer::get_time_us,
 };
 
 #[repr(C)]
@@ -79,7 +86,11 @@ pub fn sys_exec(path: *const u8) -> isize {
 /// If there is not a child process whose pid is same as given, return -1.
 /// Else if there is a child process but it is still running, return -2.
 pub fn sys_waitpid(pid: isize, exit_code_ptr: *mut i32) -> isize {
-    trace!("kernel::pid[{}] sys_waitpid [{}]", current_task().unwrap().pid.0, pid);
+    trace!(
+        "kernel::pid[{}] sys_waitpid [{}]",
+        current_task().unwrap().pid.0,
+        pid
+    );
     let task = current_task().unwrap();
     // find a child process
 
@@ -118,40 +129,100 @@ pub fn sys_waitpid(pid: isize, exit_code_ptr: *mut i32) -> isize {
 /// HINT: You might reimplement it with virtual memory management.
 /// HINT: What if [`TimeVal`] is splitted by two pages ?
 pub fn sys_get_time(_ts: *mut TimeVal, _tz: usize) -> isize {
-    trace!(
-        "kernel:pid[{}] sys_get_time NOT IMPLEMENTED",
-        current_task().unwrap().pid.0
+    trace!("kernel: sys_get_time");
+    let us = get_time_us();
+    let time_val = TimeVal {
+        sec: us / 1_000_000,
+        usec: us % 1_000_000,
+    };
+    let mut dest_ptr = translated_byte_buffer(
+        current_user_token(),
+        _ts as *const u8,
+        core::mem::size_of::<TimeVal>(),
     );
-    -1
+    let src_ptr = &time_val as *const TimeVal as *const u8;
+    unsafe {
+        core::ptr::copy_nonoverlapping(
+            src_ptr,
+            dest_ptr[0].as_mut_ptr(),
+            core::mem::size_of::<TimeVal>(),
+        );
+    }
+    0
 }
 
 /// YOUR JOB: Finish sys_task_info to pass testcases
 /// HINT: You might reimplement it with virtual memory management.
 /// HINT: What if [`TaskInfo`] is splitted by two pages ?
 pub fn sys_task_info(_ti: *mut TaskInfo) -> isize {
-    trace!(
-        "kernel:pid[{}] sys_task_info NOT IMPLEMENTED",
-        current_task().unwrap().pid.0
+    trace!("kernel: sys_task_info");
+    let mut dest_ptr = translated_byte_buffer(
+        current_user_token(),
+        _ti as *const u8,
+        core::mem::size_of::<TaskInfo>(),
     );
-    -1
+    let task_info = TaskInfo {
+        status: get_current_task_status(),
+        syscall_times: get_current_task_syscall_times(),
+        time: (get_time_us() / 1000) - get_current_task_fst_time(),
+    };
+    let src_ptr = &task_info as *const TaskInfo as *const u8;
+    unsafe {
+        core::ptr::copy_nonoverlapping(
+            src_ptr,
+            dest_ptr[0].as_mut_ptr(),
+            core::mem::size_of::<TaskInfo>(),
+        );
+    }
+    0
 }
 
 /// YOUR JOB: Implement mmap.
 pub fn sys_mmap(_start: usize, _len: usize, _port: usize) -> isize {
-    trace!(
-        "kernel:pid[{}] sys_mmap NOT IMPLEMENTED",
-        current_task().unwrap().pid.0
-    );
-    -1
+    trace!("kernel: sys_mmap");
+    if _start % PAGE_SIZE != 0
+        || _port & !0x7 != 0
+        || _port & 0x7 == 0
+        || _start >= usize::MAX
+        || _start + _len >= usize::MAX
+    {
+        return -1;
+    }
+    let start_vpn = VirtAddr::from(_start).floor();
+    let end_vpn = VirtAddr::from(_start + _len).ceil();
+    //左闭右开
+    for i in start_vpn.0..end_vpn.0 {
+        if let Some(pte) = get_pte_by_vpn(VirtPageNum(i)) {
+            if pte.is_valid() {
+                return -1;
+            }
+        };
+    }
+    let permission = MapPermission::from_bits_truncate((_port << 1) as u8) | MapPermission::U;
+    alloc_framed_area(start_vpn.into(), end_vpn.into(), permission);
+    0
 }
 
 /// YOUR JOB: Implement munmap.
 pub fn sys_munmap(_start: usize, _len: usize) -> isize {
-    trace!(
-        "kernel:pid[{}] sys_munmap NOT IMPLEMENTED",
-        current_task().unwrap().pid.0
-    );
-    -1
+    trace!("kernel: sys_munmap");
+    if _start % PAGE_SIZE != 0 || _start >= usize::MAX || _start + _len >= usize::MAX {
+        return -1;
+    }
+    let start_vpn = VirtAddr::from(_start).floor();
+    let end_vpn = VirtAddr::from(_start + _len).ceil();
+    //左闭右开
+    for i in start_vpn.0..end_vpn.0 {
+        if let Some(pte) = get_pte_by_vpn(VirtPageNum(i)) {
+            if !pte.is_valid() {
+                return -1;
+            }
+        } else {
+            return -1;
+        };
+    }
+    unmap_sequence_area(start_vpn, end_vpn);
+    0
 }
 
 /// change data segment size

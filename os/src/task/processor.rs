@@ -7,6 +7,8 @@
 use super::__switch;
 use super::{fetch_task, TaskStatus};
 use super::{TaskContext, TaskControlBlock};
+use crate::config::MAX_SYSCALL_NUM;
+use crate::mm::{MapPermission, PageTableEntry, VirtAddr, VirtPageNum};
 use crate::sync::UPSafeCell;
 use crate::trap::TrapContext;
 use alloc::sync::Arc;
@@ -107,5 +109,74 @@ pub fn schedule(switched_task_cx_ptr: *mut TaskContext) {
     drop(processor);
     unsafe {
         __switch(switched_task_cx_ptr, idle_task_cx_ptr);
+    }
+}
+
+/// get current task status
+pub fn get_current_task_status() -> TaskStatus {
+    let processor = PROCESSOR.exclusive_access();
+    if let Some(cur) = processor.current() {
+        cur.inner_exclusive_access().task_status
+    } else {
+        TaskStatus::Running
+    }
+}
+
+/// get current task syscall times
+pub fn get_current_task_syscall_times() -> [u32; MAX_SYSCALL_NUM] {
+    let processor = PROCESSOR.exclusive_access();
+    if let Some(cur) = processor.current() {
+        cur.inner_exclusive_access().syscall_times
+    } else {
+        [0; MAX_SYSCALL_NUM]
+    }
+}
+
+/// get current task fst time
+pub fn get_current_task_fst_time() -> usize {
+    let processor = PROCESSOR.exclusive_access();
+    if let Some(cur) = processor.current() {
+        cur.inner_exclusive_access().fst_start_time
+    } else {
+        0
+    }
+}
+
+/// record syscall time
+pub fn note_syscall(syscall_id: usize) {
+    let processor = PROCESSOR.exclusive_access();
+    if let Some(cur) = processor.current() {
+        cur.inner_exclusive_access().syscall_times[syscall_id] += 1;
+    }
+}
+
+/// alloc framed area
+pub fn alloc_framed_area(start_va: VirtAddr, end_va: VirtAddr, permission: MapPermission) {
+    let processor = PROCESSOR.exclusive_access();
+    if let Some(cur) = processor.current() {
+        cur.inner_exclusive_access()
+            .memory_set
+            .insert_framed_area(start_va, end_va, permission)
+    }
+}
+
+/// get pte from vpn
+pub fn get_pte_by_vpn(vpn: VirtPageNum) -> Option<PageTableEntry> {
+    let processor = PROCESSOR.exclusive_access();
+    if let Some(cur) = processor.current() {
+        cur.inner_exclusive_access().memory_set.translate(vpn)
+    } else {
+        None
+    }
+}
+
+/// unmap vp area
+pub fn unmap_sequence_area(start_vpn: VirtPageNum, end_vpn: VirtPageNum) {
+    let processor = PROCESSOR.exclusive_access();
+    if let Some(cur) = processor.current() {
+        let mut inner = cur.inner_exclusive_access();
+        for i in start_vpn.0..end_vpn.0 {
+            inner.memory_set.get_page_table().unmap(VirtPageNum(i));
+        }
     }
 }

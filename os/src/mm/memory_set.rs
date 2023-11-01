@@ -271,6 +271,11 @@ impl MemorySet {
         self.areas.clear();
     }
 
+    /// get page table as mut ref
+    pub fn get_page_table(&mut self) -> &mut PageTable {
+        &mut self.page_table
+    }
+
     /// shrink the area to new_end
     #[allow(unused)]
     pub fn shrink_to(&mut self, start: VirtAddr, new_end: VirtAddr) -> bool {
