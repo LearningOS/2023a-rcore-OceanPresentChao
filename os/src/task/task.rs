@@ -1,7 +1,7 @@
 //! Types related to task management & Functions for completely changing TCB
 use super::TaskContext;
 use super::{kstack_alloc, pid_alloc, KernelStack, PidHandle};
-use crate::config::{MAX_SYSCALL_NUM, TRAP_CONTEXT_BASE};
+use crate::config::{BIG_STRIDE, DEFAULT_PRIORITY, MAX_SYSCALL_NUM, TRAP_CONTEXT_BASE};
 use crate::mm::{MemorySet, PhysPageNum, VirtAddr, KERNEL_SPACE};
 use crate::sync::UPSafeCell;
 use crate::trap::{trap_handler, TrapContext};
@@ -75,6 +75,37 @@ pub struct TaskControlBlockInner {
 
     /// fst_start_time
     pub fst_start_time: usize,
+
+    /// priority
+    pub priority: usize,
+
+    /// pass
+    pub pass: usize,
+
+    /// stride
+    pub stride: usize,
+}
+
+impl Default for TaskControlBlockInner {
+    fn default() -> Self {
+        TaskControlBlockInner {
+            trap_cx_ppn: PhysPageNum(0),
+            base_size: 0,
+            task_cx: TaskContext::zero_init(),
+            task_status: TaskStatus::UnInit,
+            memory_set: MemorySet::new_bare(),
+            parent: None,
+            children: Vec::new(),
+            exit_code: 0,
+            heap_bottom: 0,
+            program_brk: 0,
+            syscall_times: [0; MAX_SYSCALL_NUM],
+            fst_start_time: 0,
+            priority: DEFAULT_PRIORITY,
+            stride: 0,
+            pass: BIG_STRIDE / DEFAULT_PRIORITY,
+        }
+    }
 }
 
 impl TaskControlBlockInner {
@@ -121,13 +152,9 @@ impl TaskControlBlock {
                     task_cx: TaskContext::goto_trap_return(kernel_stack_top),
                     task_status: TaskStatus::Ready,
                     memory_set,
-                    parent: None,
-                    children: Vec::new(),
-                    exit_code: 0,
                     heap_bottom: user_sp,
                     program_brk: user_sp,
-                    syscall_times: [0; MAX_SYSCALL_NUM],
-                    fst_start_time: 0,
+                    ..TaskControlBlockInner::default()
                 })
             },
         };
@@ -197,12 +224,9 @@ impl TaskControlBlock {
                     task_status: TaskStatus::Ready,
                     memory_set,
                     parent: Some(Arc::downgrade(self)),
-                    children: Vec::new(),
-                    exit_code: 0,
                     heap_bottom: parent_inner.heap_bottom,
                     program_brk: parent_inner.program_brk,
-                    syscall_times: [0; MAX_SYSCALL_NUM],
-                    fst_start_time: 0,
+                    ..TaskControlBlockInner::default()
                 })
             },
         });

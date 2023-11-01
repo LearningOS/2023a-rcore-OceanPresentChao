@@ -9,7 +9,7 @@ use crate::{
     },
     trap::{trap_handler, TrapContext},
 };
-use alloc::{sync::Arc, vec::Vec};
+use alloc::sync::Arc;
 
 use crate::{
     config::MAX_SYSCALL_NUM,
@@ -243,10 +243,7 @@ pub fn sys_sbrk(size: i32) -> isize {
 /// YOUR JOB: Implement spawn.
 /// HINT: fork + exec =/= spawn
 pub fn sys_spawn(_path: *const u8) -> isize {
-    trace!(
-        "kernel:pid[{}] sys_spawn NOT IMPLEMENTED",
-        current_task().unwrap().pid.0
-    );
+    trace!("kernel:pid[{}] sys_spawn", current_task().unwrap().pid.0);
     let token = current_user_token();
     let path = translated_str(token, _path);
     let cur_task = current_task().unwrap();
@@ -275,12 +272,9 @@ pub fn sys_spawn(_path: *const u8) -> isize {
                     task_status: TaskStatus::Ready,
                     memory_set,
                     parent: Some(Arc::downgrade(&cur_task)),
-                    children: Vec::new(),
-                    exit_code: 0,
                     heap_bottom: parent_inner.heap_bottom,
                     program_brk: parent_inner.program_brk,
-                    syscall_times: [0; MAX_SYSCALL_NUM],
-                    fst_start_time: 0,
+                    ..TaskControlBlockInner::default()
                 })
             },
         });
@@ -307,10 +301,20 @@ pub fn sys_spawn(_path: *const u8) -> isize {
 }
 
 // YOUR JOB: Set task priority.
+// syscall ID：140
+// 设置当前进程优先级为 prio
+// 参数：prio 进程优先级，要求 prio >= 2
+// 返回值：如果输入合法则返回 prio，否则返回 -1
 pub fn sys_set_priority(_prio: isize) -> isize {
     trace!(
-        "kernel:pid[{}] sys_set_priority NOT IMPLEMENTED",
+        "kernel:pid[{}] sys_set_priority",
         current_task().unwrap().pid.0
     );
-    -1
+    if _prio <= 1 {
+        return -1;
+    }
+    if let Some(task) = current_task() {
+        task.inner_exclusive_access().priority = _prio as usize;
+    }
+    _prio
 }
