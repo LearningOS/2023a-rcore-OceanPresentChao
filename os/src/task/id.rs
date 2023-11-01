@@ -47,6 +47,7 @@ lazy_static! {
         unsafe { UPSafeCell::new(RecycleAllocator::new()) };
 }
 
+#[derive(Clone)]
 /// Abstract structure of PID
 pub struct PidHandle(pub usize);
 

@@ -1,10 +1,15 @@
 //! Process management syscalls
 use crate::{
-    config::PAGE_SIZE,
-    mm::{MapPermission, VirtAddr, VirtPageNum},
-    task::{alloc_framed_area, get_pte_by_vpn, unmap_sequence_area},
+    config::{PAGE_SIZE, TRAP_CONTEXT_BASE},
+    mm::{MapPermission, MemorySet, VirtAddr, VirtPageNum, KERNEL_SPACE},
+    sync::UPSafeCell,
+    task::{
+        alloc_framed_area, get_pte_by_vpn, kstack_alloc, pid_alloc, unmap_sequence_area,
+        TaskContext, TaskControlBlock, TaskControlBlockInner,
+    },
+    trap::{trap_handler, TrapContext},
 };
-use alloc::sync::Arc;
+use alloc::{sync::Arc, vec::Vec};
 
 use crate::{
     config::MAX_SYSCALL_NUM,
@@ -242,7 +247,63 @@ pub fn sys_spawn(_path: *const u8) -> isize {
         "kernel:pid[{}] sys_spawn NOT IMPLEMENTED",
         current_task().unwrap().pid.0
     );
-    -1
+    let token = current_user_token();
+    let path = translated_str(token, _path);
+    let cur_task = current_task().unwrap();
+    let mut parent_inner = cur_task.inner_exclusive_access();
+
+    if let Some(elf_data) = get_app_data_by_name(path.as_str()) {
+        let (memory_set, user_sp, entry_point) = MemorySet::from_elf(elf_data);
+        let trap_cx_ppn = memory_set
+            .translate(VirtAddr::from(TRAP_CONTEXT_BASE).into())
+            .unwrap()
+            .ppn();
+
+        // alloc a pid and a kernel stack in kernel space
+        let pid_handle = pid_alloc();
+        let pid = pid_handle.0;
+        let kernel_stack = kstack_alloc();
+        let kernel_stack_top = kernel_stack.get_top();
+        let task_control_block = Arc::new(TaskControlBlock {
+            pid: pid_handle,
+            kernel_stack,
+            inner: unsafe {
+                UPSafeCell::new(TaskControlBlockInner {
+                    trap_cx_ppn,
+                    base_size: parent_inner.base_size,
+                    task_cx: TaskContext::goto_trap_return(kernel_stack_top),
+                    task_status: TaskStatus::Ready,
+                    memory_set,
+                    parent: Some(Arc::downgrade(&cur_task)),
+                    children: Vec::new(),
+                    exit_code: 0,
+                    heap_bottom: parent_inner.heap_bottom,
+                    program_brk: parent_inner.program_brk,
+                    syscall_times: [0; MAX_SYSCALL_NUM],
+                    fst_start_time: 0,
+                })
+            },
+        });
+
+        // prepare TrapContext in user space
+        let trap_cx = task_control_block.inner_exclusive_access().get_trap_cx();
+        *trap_cx = TrapContext::app_init_context(
+            entry_point,
+            user_sp,
+            KERNEL_SPACE.exclusive_access().token(),
+            kernel_stack_top,
+            trap_handler as usize,
+        );
+
+        // add child
+        parent_inner.children.push(task_control_block.clone());
+
+        add_task(task_control_block);
+
+        pid as isize
+    } else {
+        -1
+    }
 }
 
 // YOUR JOB: Set task priority.
